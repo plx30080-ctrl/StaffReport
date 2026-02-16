@@ -4,11 +4,12 @@ import { signOut } from './firebase/auth';
 import { Login } from './components/Login';
 import { TeamMemberForm } from './components/TeamMemberForm';
 import { ManagerDashboard } from './components/ManagerDashboard';
+import { ConfigTab } from './components/ConfigTab';
 import { Button, LoadingSpinner } from './components/ui';
 
 function App() {
   const { user, loading, isManager } = useAuth();
-  const [view, setView] = useState('auto'); // 'auto', 'team', 'manager'
+  const [view, setView] = useState('auto'); // 'auto', 'team', 'manager', 'config'
 
   const handleSignOut = async () => {
     await signOut();
@@ -61,6 +62,16 @@ function App() {
                   >
                     Submit Report
                   </button>
+                  <button
+                    onClick={() => setView('config')}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      currentView === 'config'
+                        ? 'bg-primary-600 text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    Config
+                  </button>
                 </div>
               )}
             </div>
@@ -73,11 +84,9 @@ function App() {
 
       {/* Main Content */}
       <main>
-        {currentView === 'manager' ? (
-          <ManagerDashboard user={user} />
-        ) : (
-          <TeamMemberForm user={user} />
-        )}
+        {currentView === 'manager' && <ManagerDashboard user={user} />}
+        {currentView === 'team' && <TeamMemberForm user={user} />}
+        {currentView === 'config' && <ConfigTab user={user} />}
       </main>
     </div>
   );

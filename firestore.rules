@@ -14,43 +14,26 @@ service cloud.firestore {
              request.auth.token.email == 'cody.hale@employbridge.com';
     }
 
-    // Helper function to check if submission is locked (after Monday 9 AM)
-    function isLocked(weekEnding) {
-      // Parse the week ending date (format: YYYY-MM-DD)
-      let weekEndDate = timestamp.date(
-        int(weekEnding.split('-')[0]),  // year
-        int(weekEnding.split('-')[1]),  // month
-        int(weekEnding.split('-')[2])   // day
-      );
-
-      // Calculate Monday 9 AM after the week ending (Friday + 3 days)
-      let lockDate = weekEndDate + duration.value(3, 'd') + duration.value(9, 'h');
-
-      // Check if current time is past the lock date
-      return request.time > lockDate;
-    }
-
     // Submissions collection rules
     match /submissions/{submissionId} {
-
       // Allow authenticated users to read all submissions
       allow read: if isAuthenticated();
 
-      // Allow authenticated users to create new submissions
-      allow create: if isAuthenticated() &&
-                      request.resource.data.lastUpdatedBy == request.auth.token.email;
-
-      // Allow updates only if:
-      // 1. User is authenticated
-      // 2. Submission is not locked (before Monday 9 AM)
-      // 3. User is updating their own submission OR user is manager
-      allow update: if isAuthenticated() &&
-                      !isLocked(resource.data.weekEnding) &&
-                      (request.resource.data.lastUpdatedBy == request.auth.token.email ||
-                       isManager());
+      // Allow authenticated users to create and update submissions
+      allow create, update: if isAuthenticated() &&
+                              request.resource.data.lastUpdatedBy == request.auth.token.email;
 
       // Only managers can delete submissions
       allow delete: if isManager();
+    }
+
+    // Settings collection rules (for app configuration)
+    match /settings/{settingId} {
+      // Anyone authenticated can read settings
+      allow read: if isAuthenticated();
+
+      // Only managers can create, update, or delete settings
+      allow create, update, delete: if isManager();
     }
 
     // Deny all other access by default

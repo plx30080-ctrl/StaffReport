@@ -8,11 +8,10 @@ import {
   where,
   orderBy,
   onSnapshot,
-  Timestamp,
   serverTimestamp
 } from 'firebase/firestore';
 import { db } from './config';
-import { format, startOfWeek, addWeeks, isBefore, startOfDay, addDays } from 'date-fns';
+import { format, startOfDay, addDays } from 'date-fns';
 
 const SUBMISSIONS_COLLECTION = 'submissions';
 
@@ -29,14 +28,6 @@ export const formatWeekEnding = (date) => {
   return format(date, 'yyyy-MM-dd');
 };
 
-// Check if a submission is locked (after Monday 9 AM following the week ending)
-export const isSubmissionLocked = (weekEndingDate) => {
-  const weekEnding = new Date(weekEndingDate);
-  const mondayAfter = addDays(weekEnding, 3); // Friday + 3 days = Monday
-  mondayAfter.setHours(9, 0, 0, 0);
-  return isBefore(mondayAfter, new Date());
-};
-
 // Create submission ID
 const createSubmissionId = (weekEnding, locationCode) => {
   return `${formatWeekEnding(weekEnding)}_${locationCode}`;
@@ -46,11 +37,6 @@ const createSubmissionId = (weekEnding, locationCode) => {
 export const saveSubmission = async (data, user) => {
   const submissionId = createSubmissionId(data.weekEnding, data.locationCode);
   const submissionRef = doc(db, SUBMISSIONS_COLLECTION, submissionId);
-
-  // Check if locked
-  if (isSubmissionLocked(data.weekEnding)) {
-    throw new Error('This submission is locked and cannot be edited');
-  }
 
   // Get existing submission for update history
   const existingDoc = await getDoc(submissionRef);

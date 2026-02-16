@@ -1,32 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, Input, TextArea, Select, Card, CardHeader, CardTitle, CardContent, StatusBadge, LoadingSpinner } from './ui';
-import { LOCATIONS, getLocationName } from '../constants/locations';
-import { saveSubmission, getSubmission, subscribeToSubmission, getNextFriday, formatWeekEnding, isSubmissionLocked } from '../firebase/submissions';
+import { saveSubmission, subscribeToSubmission, getNextFriday, formatWeekEnding } from '../firebase/submissions';
 import { useAutoSave } from '../hooks/useAutoSave';
+import { useConfig } from '../hooks/useConfig';
 import { formatTimestamp, formatDateInput } from '../utils/formatters';
+import { getActiveLocations } from '../firebase/config-service';
 
 export const TeamMemberForm = ({ user }) => {
+  const { config, loading: configLoading } = useConfig();
   const [selectedLocation, setSelectedLocation] = useState('');
   const [weekEnding, setWeekEnding] = useState(formatDateInput(getNextFriday()));
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [locked, setLocked] = useState(false);
-
-  // Form data
-  const [formData, setFormData] = useState({
-    openOrders: '',
-    candidatesInterviewed: '',
-    starts: '',
-    ends: '',
-    salesMeetings: '',
-    marketingComms: '',
-    wins: '',
-    salesPlan: '',
-    goals: '',
-    challenges: '',
-    notes: ''
-  });
-
+  const [formData, setFormData] = useState({});
   const [submission, setSubmission] = useState(null);
   const [message, setMessage] = useState({ type: '', text: '' });
 
@@ -45,10 +31,22 @@ export const TeamMemberForm = ({ user }) => {
     }
   }, [selectedLocation]);
 
-  // Check if submission is locked
+  // Initialize form data structure from config
   useEffect(() => {
-    setLocked(isSubmissionLocked(weekEnding));
-  }, [weekEnding]);
+    if (config && Object.keys(formData).length === 0) {
+      const initialData = {};
+      Object.values(config.formSections || {}).forEach(section => {
+        if (section.enabled) {
+          section.fields?.forEach(field => {
+            if (field.enabled) {
+              initialData[field.id] = '';
+            }
+          });
+        }
+      });
+      setFormData(initialData);
+    }
+  }, [config, formData]);
 
   // Load submission data
   useEffect(() => {
@@ -58,34 +56,16 @@ export const TeamMemberForm = ({ user }) => {
     const unsubscribe = subscribeToSubmission(weekEnding, selectedLocation, (data) => {
       setSubmission(data);
       if (data) {
-        setFormData({
-          openOrders: data.metrics?.openOrders ?? '',
-          candidatesInterviewed: data.metrics?.candidatesInterviewed ?? '',
-          starts: data.metrics?.starts ?? '',
-          ends: data.metrics?.ends ?? '',
-          salesMeetings: data.metrics?.salesMeetings ?? '',
-          marketingComms: data.metrics?.marketingComms ?? '',
-          wins: data.textFields?.wins ?? '',
-          salesPlan: data.textFields?.salesPlan ?? '',
-          goals: data.textFields?.goals ?? '',
-          challenges: data.textFields?.challenges ?? '',
-          notes: data.textFields?.notes ?? ''
+        const loadedData = {};
+        // Load metrics
+        Object.keys(data.metrics || {}).forEach(key => {
+          loadedData[key] = data.metrics[key] ?? '';
         });
-      } else {
-        // Reset form for new submission
-        setFormData({
-          openOrders: '',
-          candidatesInterviewed: '',
-          starts: '',
-          ends: '',
-          salesMeetings: '',
-          marketingComms: '',
-          wins: '',
-          salesPlan: '',
-          goals: '',
-          challenges: '',
-          notes: ''
+        // Load text fields
+        Object.keys(data.textFields || {}).forEach(key => {
+          loadedData[key] = data.textFields[key] ?? '';
         });
+        setFormData(prev => ({ ...prev, ...loadedData }));
       }
       setLoading(false);
     });
@@ -96,32 +76,42 @@ export const TeamMemberForm = ({ user }) => {
   // Auto-save function
   const saveFunction = useCallback(async (data) => {
     if (!selectedLocation || !weekEnding) return;
-    if (locked) throw new Error('This submission is locked');
+
+    const metrics = {};
+    const textFields = {};
+
+    // Separate metrics and text fields based on field types
+    Object.values(config.formSections || {}).forEach(section => {
+      if (section.enabled) {
+        section.fields?.forEach(field => {
+          if (field.enabled && data[field.id] !== undefined) {
+            if (field.type === 'number') {
+              metrics[field.id] = Number(data[field.id]) || 0;
+            } else {
+              textFields[field.id] = data[field.id] || '';
+            }
+          }
+        });
+      }
+    });
+
+    const location = getActiveLocations(config).find(loc => loc.code === selectedLocation);
 
     await saveSubmission({
-      location: getLocationName(selectedLocation),
+      location: location?.name || selectedLocation,
       locationCode: selectedLocation,
       weekEnding,
-      status: submission?.status || 'draft',
-      metrics: {
-        openOrders: Number(data.openOrders) || 0,
-        candidatesInterviewed: Number(data.candidatesInterviewed) || 0,
-        starts: Number(data.starts) || 0,
-        ends: Number(data.ends) || 0,
-        salesMeetings: Number(data.salesMeetings) || 0,
-        marketingComms: Number(data.marketingComms) || 0
-      },
-      textFields: {
-        wins: data.wins || '',
-        salesPlan: data.salesPlan || '',
-        goals: data.goals || '',
-        challenges: data.challenges || '',
-        notes: data.notes || ''
-      }
+      status: 'submitted',
+      metrics,
+      textFields
     }, user);
-  }, [selectedLocation, weekEnding, user, submission, locked]);
+  }, [selectedLocation, weekEnding, user, config]);
 
-  const { saving, lastSaved, error: autoSaveError, saveNow } = useAutoSave(formData, saveFunction);
+  const { saving, lastSaved, error: autoSaveError, saveNow } = useAutoSave(
+    formData,
+    saveFunction,
+    config?.settings?.autoSaveInterval || 60000
+  );
 
   const handleInputChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -133,38 +123,13 @@ export const TeamMemberForm = ({ user }) => {
       return;
     }
 
-    if (locked) {
-      setMessage({ type: 'error', text: 'This submission is locked and cannot be edited' });
-      return;
-    }
-
     setSubmitting(true);
     setMessage({ type: '', text: '' });
 
     try {
-      await saveSubmission({
-        location: getLocationName(selectedLocation),
-        locationCode: selectedLocation,
-        weekEnding,
-        status: 'submitted',
-        metrics: {
-          openOrders: Number(formData.openOrders) || 0,
-          candidatesInterviewed: Number(formData.candidatesInterviewed) || 0,
-          starts: Number(formData.starts) || 0,
-          ends: Number(formData.ends) || 0,
-          salesMeetings: Number(formData.salesMeetings) || 0,
-          marketingComms: Number(formData.marketingComms) || 0
-        },
-        textFields: {
-          wins: formData.wins || '',
-          salesPlan: formData.salesPlan || '',
-          goals: formData.goals || '',
-          challenges: formData.challenges || '',
-          notes: formData.notes || ''
-        }
-      }, user);
-
+      await saveNow();
       setMessage({ type: 'success', text: 'Successfully submitted!' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
     } finally {
@@ -172,15 +137,43 @@ export const TeamMemberForm = ({ user }) => {
     }
   };
 
+  // Calculate net change for branch operations
   const netChange = (Number(formData.starts) || 0) - (Number(formData.ends) || 0);
 
+  const locations = getActiveLocations(config);
   const locationOptions = [
     { value: '', label: 'Select Location...' },
-    ...LOCATIONS.map(loc => ({
+    ...locations.map(loc => ({
       value: loc.code,
       label: `${loc.name} (${loc.code})`
     }))
   ];
+
+  const renderField = (field) => {
+    const commonProps = {
+      key: field.id,
+      label: field.label,
+      value: formData[field.id] || '',
+      onChange: (e) => handleInputChange(field.id, e.target.value),
+      placeholder: field.placeholder,
+      disabled: loading || submitting
+    };
+
+    if (field.type === 'number') {
+      return <Input {...commonProps} type="number" min="0" />;
+    } else if (field.type === 'textarea') {
+      return <TextArea {...commonProps} rows={field.rows || 3} />;
+    }
+    return <Input {...commonProps} />;
+  };
+
+  if (configLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <LoadingSpinner text="Loading configuration..." />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 py-4 px-4 md:py-8">
@@ -224,12 +217,6 @@ export const TeamMemberForm = ({ user }) => {
               </div>
             </div>
           )}
-
-          {locked && (
-            <div className="mt-4 p-3 bg-yellow-50 border border-yellow-300 rounded-lg text-sm text-yellow-800">
-              This submission is locked (past Monday 9 AM deadline) and cannot be edited.
-            </div>
-          )}
         </Card>
 
         {loading ? (
@@ -238,166 +225,69 @@ export const TeamMemberForm = ({ user }) => {
           </Card>
         ) : selectedLocation && weekEnding ? (
           <>
-            <Card className="mb-6">
-              <CardHeader>
-                <CardTitle>Daily Metrics</CardTitle>
-                <p className="text-sm text-gray-600 mt-1">
-                  Update these as often as needed during the week
-                </p>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Input
-                    label="Current Open Orders"
-                    type="number"
-                    value={formData.openOrders}
-                    onChange={(e) => handleInputChange('openOrders', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="e.g., 15"
-                  />
-                  <Input
-                    label="Candidates Sent to Interviews"
-                    type="number"
-                    value={formData.candidatesInterviewed}
-                    onChange={(e) => handleInputChange('candidatesInterviewed', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="Cumulative for the week"
-                  />
-                  <Input
-                    label="Assignment Starts"
-                    type="number"
-                    value={formData.starts}
-                    onChange={(e) => handleInputChange('starts', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="Cumulative for the week"
-                  />
-                  <Input
-                    label="Assignment Ends"
-                    type="number"
-                    value={formData.ends}
-                    onChange={(e) => handleInputChange('ends', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="Cumulative for the week"
-                  />
-                </div>
+            {/* Render dynamic sections */}
+            {Object.entries(config.formSections || {}).map(([sectionId, section]) => {
+              if (!section.enabled) return null;
 
-                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium text-gray-700">Net Headcount Change:</span>
-                    <span className={`text-xl font-bold ${netChange > 0 ? 'text-green-600' : netChange < 0 ? 'text-red-600' : 'text-gray-600'}`}>
-                      {netChange > 0 ? '+' : ''}{netChange}
-                    </span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+              const enabledFields = section.fields?.filter(f => f.enabled) || [];
+              if (enabledFields.length === 0) return null;
 
-            <Card className="mb-6">
-              <CardHeader>
-                <CardTitle>Weekly Wrap-Up</CardTitle>
-                <p className="text-sm text-gray-600 mt-1">
-                  Typically filled once at the end of the week
-                </p>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  <Input
-                    label="Client Meetings / Site Visits"
-                    type="number"
-                    value={formData.salesMeetings}
-                    onChange={(e) => handleInputChange('salesMeetings', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="Count for the week"
-                  />
-                  <Input
-                    label="Skill Marketing Communications Sent"
-                    type="number"
-                    value={formData.marketingComms}
-                    onChange={(e) => handleInputChange('marketingComms', e.target.value)}
-                    min="0"
-                    disabled={locked}
-                    placeholder="Count for the week"
-                  />
-                </div>
+              // Check if this is branch operations (has starts/ends fields)
+              const isBranchOps = enabledFields.some(f => f.id === 'starts' || f.id === 'ends');
 
-                <TextArea
-                  label="Wins This Week"
-                  value={formData.wins}
-                  onChange={(e) => handleInputChange('wins', e.target.value)}
-                  rows={3}
-                  disabled={locked}
-                  placeholder="New accounts, renewals, order increases, positive feedback..."
-                />
+              return (
+                <Card key={sectionId} className="mb-6">
+                  <CardHeader>
+                    <CardTitle>{section.title}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {/* Number fields in grid */}
+                    {enabledFields.filter(f => f.type === 'number').length > 0 && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        {enabledFields
+                          .filter(f => f.type === 'number')
+                          .map(field => renderField(field))}
+                      </div>
+                    )}
 
-                <TextArea
-                  label="Sales Plan for Next Week"
-                  value={formData.salesPlan}
-                  onChange={(e) => handleInputChange('salesPlan', e.target.value)}
-                  rows={3}
-                  disabled={locked}
-                  placeholder="Specific targets, prospects, meetings scheduled..."
-                />
+                    {/* Show net change for branch operations */}
+                    {isBranchOps && (
+                      <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-gray-700">Net Headcount Change:</span>
+                          <span className={`text-xl font-bold ${netChange > 0 ? 'text-green-600' : netChange < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                            {netChange > 0 ? '+' : ''}{netChange}
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
-                <TextArea
-                  label="Branch Goals/Targets for Next Week"
-                  value={formData.goals}
-                  onChange={(e) => handleInputChange('goals', e.target.value)}
-                  rows={3}
-                  disabled={locked}
-                  placeholder="Team objectives and key targets..."
-                />
+                    {/* Text area fields */}
+                    {enabledFields
+                      .filter(f => f.type === 'textarea')
+                      .map(field => renderField(field))}
+                  </CardContent>
+                </Card>
+              );
+            })}
 
-                <TextArea
-                  label="Current Challenges"
-                  value={formData.challenges}
-                  onChange={(e) => handleInputChange('challenges', e.target.value)}
-                  rows={3}
-                  disabled={locked}
-                  placeholder="Obstacles, concerns, areas needing support..."
-                />
-
-                <TextArea
-                  label="Additional Notes (Optional)"
-                  value={formData.notes}
-                  onChange={(e) => handleInputChange('notes', e.target.value)}
-                  rows={2}
-                  disabled={locked}
-                  placeholder="Any other relevant information..."
-                />
-              </CardContent>
-            </Card>
-
+            {/* Submit section */}
             <Card>
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div className="text-sm text-gray-600">
                   {saving && <span className="text-blue-600">Saving...</span>}
-                  {!saving && lastSaved && <span>Last saved {formatTimestamp(lastSaved)}</span>}
-                  {!saving && !lastSaved && <span>Auto-save enabled (every 60 seconds)</span>}
+                  {!saving && lastSaved && <span>Auto-saved {formatTimestamp(lastSaved)}</span>}
+                  {!saving && !lastSaved && <span>Auto-save enabled</span>}
                   {autoSaveError && <span className="text-red-600">Error: {autoSaveError}</span>}
                 </div>
-                <div className="flex gap-2 w-full md:w-auto">
-                  <Button
-                    variant="secondary"
-                    onClick={saveNow}
-                    disabled={saving || locked || submitting}
-                    fullWidth
-                  >
-                    Save Progress
-                  </Button>
-                  <Button
-                    variant="success"
-                    onClick={handleSubmit}
-                    disabled={saving || locked || submitting || submission?.status === 'submitted'}
-                    fullWidth
-                  >
-                    {submitting ? 'Submitting...' : 'Mark as Submitted'}
-                  </Button>
-                </div>
+                <Button
+                  variant="success"
+                  onClick={handleSubmit}
+                  disabled={saving || submitting}
+                  className="w-full md:w-auto min-w-[200px]"
+                >
+                  {submitting ? 'Submitting...' : 'Submit'}
+                </Button>
               </div>
 
               {message.text && (
